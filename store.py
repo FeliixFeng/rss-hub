@@ -199,7 +199,6 @@ def get_items(
 
 
 def sources_summary(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Merge configured sources with last fetch-log entry per source."""
     with _lock:
         conn = _require()
         last_rows = conn.execute(
@@ -216,6 +215,7 @@ def sources_summary(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "name": s["name"],
                 "url": s["url"],
                 "enabled": s["enabled"],
+                "domain": s.get("domain") or None,
                 "last_fetched_at": entry.get("fetched_at"),
                 "last_ok": bool(entry["ok"]) if entry else None,
                 "last_item_count": entry.get("item_count"),
@@ -223,6 +223,14 @@ def sources_summary(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def clear_items() -> int:
+    with _lock:
+        conn = _require()
+        cur = conn.execute("DELETE FROM feed_items")
+        conn.commit()
+        return cur.rowcount
 
 
 def status() -> dict[str, Any]:

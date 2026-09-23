@@ -101,6 +101,7 @@ def load_sources(feeds_path: Path) -> list[dict[str, Any]]:
                 "name": name,
                 "url": url,
                 "enabled": bool(raw.get("enabled", True)),
+                "domain": str(raw.get("domain") or "").strip(),
             }
         )
     return sources
