@@ -1,6 +1,6 @@
 [project]
 name = "rss-hub"
-version = "0.3.1"
+version = "0.4.0"
 description = "Personal RSS fetcher: crawl feeds, store items, expose polled API"
 requires-python = ">=3.10"
 dependencies = [
@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn>=0.30.0",
     "feedparser>=6.0.11",
     "httpx>=0.27.0",
+    "trafilatura>=2.0.0",
     "tomli>=2.0.0; python_version < '3.11'",
 ]
 

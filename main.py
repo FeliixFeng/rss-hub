@@ -19,7 +19,7 @@ FEEDS_PATH = BASE_DIR / "feeds.toml"
 DB_PATH = BASE_DIR / "data" / "feeds.db"
 POLL_INTERVAL_SECONDS = int(os.environ.get("RSS_POLL_INTERVAL", "3600"))
 API_KEY = os.environ.get("RSS_API_KEY", "")
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 _sources_cache: list[dict[str, Any]] = []
 _fetch_lock = asyncio.Lock()

@@ -109,6 +109,27 @@ def migrate_html_summaries() -> int:
         return updated
 
 
+def delete_items(ids: list[str]) -> int:
+    if not ids:
+        return 0
+    with _lock:
+        conn = _require()
+        marks = ",".join("?" for _ in ids)
+        cur = conn.execute(f"DELETE FROM feed_items WHERE id IN ({marks})", ids)
+        conn.commit()
+        return cur.rowcount
+
+
+def purge_short_summaries(min_len: int) -> int:
+    with _lock:
+        conn = _require()
+        cur = conn.execute(
+            "DELETE FROM feed_items WHERE length(summary) < ?", (min_len,)
+        )
+        conn.commit()
+        return cur.rowcount
+
+
 def upsert_items(items: list[dict[str, Any]]) -> int:
     if not items:
         return 0

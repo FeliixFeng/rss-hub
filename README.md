@@ -114,7 +114,7 @@ curl -X POST -H "X-API-Key: $RSS_API_KEY" localhost:8080/api/v1/sources/reload
       "source": "V2EX",
       "title": "...",
       "url": "https://...",
-      "summary": "plain text from feed body/content, ≤10000 chars, HTML stripped",
+      "summary": "full article plain text (page extract preferred), ≥500 chars; items without full text are not stored",
       "published_at": "2026-09-23T04:19:30Z",
       "fetched_at": "2026-09-23T04:56:13Z"
     }
@@ -140,7 +140,7 @@ curl -X POST -H "X-API-Key: $RSS_API_KEY" localhost:8080/api/v1/sources/reload
   "ok": true,
   "server_time": "...",
   "service": "rss-hub",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "poll_interval_seconds": 3600,
   "sources_configured": 12,
   "sources_enabled": 12,
@@ -185,7 +185,7 @@ feed_items (
   source       TEXT NOT NULL,
   title        TEXT NOT NULL,
   url          TEXT NOT NULL,
-  summary      TEXT NOT NULL,     -- plain text ≤10000 chars
+  summary      TEXT NOT NULL,     -- full article plain text ≥500 chars
   published_at TEXT,              -- source format, nullable
   fetched_at   TEXT NOT NULL      -- UTC ISO-8601 — since cursor
 );
@@ -208,6 +208,8 @@ meta      (key, value);           -- last_round_at, last_round_reason, ...
 | Manual | `POST /api/v1/refresh` |
 
 Desktop Chrome `User-Agent` (several CN sites reject default library UAs). Per-source timeout 15s, max 20 entries ingested per feed per round.
+
+**Full text:** after each feed, the hub GETs each entry `url` and extracts article text with `trafilatura` (page concurrency 12). An item is **kept only if** the final plain text is ≥ `MIN_FULL_TEXT` (500) chars; otherwise it is skipped and any existing short row is deleted. Feed body is kept when the page fetch fails but the feed already has ≥500 chars. Downstream must not re-crawl pages — the hub is the aggregation layer.
 
 ## Configuration
 

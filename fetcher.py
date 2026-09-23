@@ -11,8 +11,17 @@ from typing import Any
 
 import feedparser
 import httpx
+import trafilatura
 
-from store import item_id, log_fetch, purge_old, utcnow, upsert_items
+from store import (
+    delete_items,
+    item_id,
+    log_fetch,
+    purge_old,
+    purge_short_summaries,
+    utcnow,
+    upsert_items,
+)
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -21,7 +30,9 @@ else:
 
 FETCH_TIMEOUT = 15.0
 ENTRIES_PER_FEED = 20
-SUMMARY_LIMIT = 10_000
+SUMMARY_LIMIT = 50_000
+MIN_FULL_TEXT = 500
+PAGE_CONCURRENCY = 12
 
 _SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style)[^>]*>.*?</\1>")
 _BR_RE = re.compile(r"(?i)<br\s*/?>")
@@ -103,6 +114,48 @@ def _entry_published(entry: Any) -> str | None:
     return None
 
 
+def extract_page_text(html: str) -> str:
+    if not html:
+        return ""
+    try:
+        text = trafilatura.extract(html) or ""
+    except Exception:
+        return ""
+    return html_to_text(text)
+
+
+async def fetch_full_text(
+    client: httpx.AsyncClient, url: str, feed_text: str
+) -> str:
+    page_text = ""
+    try:
+        resp = await client.get(url)
+        if resp.status_code < 400:
+            page_text = extract_page_text(resp.text)
+    except Exception:
+        page_text = ""
+    if len(page_text) >= len(feed_text):
+        return page_text
+    return feed_text
+
+
+async def hydrate_full_texts(
+    client: httpx.AsyncClient, items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    if not items:
+        return []
+    sem = asyncio.Semaphore(PAGE_CONCURRENCY)
+
+    async def one(it: dict[str, Any]) -> dict[str, Any]:
+        feed_text = clip_text(it.get("summary") or "")
+        async with sem:
+            full = await fetch_full_text(client, it["url"], feed_text)
+        it["summary"] = clip_text(full)
+        return it
+
+    return list(await asyncio.gather(*(one(it) for it in items)))
+
+
 async def fetch_one(
     client: httpx.AsyncClient, source: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], str]:
@@ -124,14 +177,14 @@ async def fetch_one(
         if not parsed.entries:
             raise ValueError("feed parsed but contains 0 entries")
         now = utcnow()
-        items = []
+        candidates: list[dict[str, Any]] = []
         for e in parsed.entries[:ENTRIES_PER_FEED]:
             url = str(getattr(e, "link", "") or "").strip()
             if not url:
                 continue
             title = str(getattr(e, "title", "") or "").strip()[:300]
             summary = clip_text(html_to_text(entry_body(e)))
-            items.append(
+            candidates.append(
                 {
                     "id": item_id(url),
                     "source": name,
@@ -142,6 +195,7 @@ async def fetch_one(
                     "fetched_at": now,
                 }
             )
+        items = await hydrate_full_texts(client, candidates)
         return items, ""
     except Exception as ex:  # noqa: BLE001 — one bad feed must not kill the round
         return [], str(ex)
@@ -165,6 +219,8 @@ async def fetch_all(sources: list[dict[str, Any]]) -> dict[str, Any]:
 
     total_new = 0
     items_seen = 0
+    items_kept = 0
+    items_dropped = 0
     failures: list[dict[str, str]] = []
     for source, (items, error) in zip(enabled, results):
         if error:
@@ -172,17 +228,34 @@ async def fetch_all(sources: list[dict[str, Any]]) -> dict[str, Any]:
             failures.append({"source": source["name"], "error": error})
             continue
         items_seen += len(items)
-        new = upsert_items(items)
+        drop_ids = [
+            it["id"]
+            for it in items
+            if len(it.get("summary") or "") < MIN_FULL_TEXT
+        ]
+        if drop_ids:
+            delete_items(drop_ids)
+            items_dropped += len(drop_ids)
+        kept = [
+            it
+            for it in items
+            if len(it.get("summary") or "") >= MIN_FULL_TEXT
+        ]
+        items_kept += len(kept)
+        new = upsert_items(kept)
         total_new += new
-        log_fetch(source["name"], ok=True, item_count=len(items), error="")
+        log_fetch(source["name"], ok=True, item_count=len(kept), error="")
 
     purged = purge_old()
+    purged += purge_short_summaries(MIN_FULL_TEXT)
     summary = {
         "fetched_at": utcnow(),
         "sources_total": len(enabled),
         "sources_ok": len(enabled) - len(failures),
         "sources_failed": len(failures),
         "items_seen": items_seen,
+        "items_kept": items_kept,
+        "items_dropped": items_dropped,
         "new_items": total_new,
         "purged_items": purged,
         "failures": failures,
