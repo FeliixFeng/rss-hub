@@ -1,6 +1,6 @@
 [project]
 name = "rss-hub"
-version = "0.3.0"
+version = "0.3.1"
 description = "Personal RSS fetcher: crawl feeds, store items, expose polled API"
 requires-python = ">=3.10"
 dependencies = [

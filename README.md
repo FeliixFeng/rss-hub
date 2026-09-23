@@ -114,7 +114,7 @@ curl -X POST -H "X-API-Key: $RSS_API_KEY" localhost:8080/api/v1/sources/reload
       "source": "V2EX",
       "title": "...",
       "url": "https://...",
-      "summary": "≤500 chars, may contain HTML",
+      "summary": "plain text from feed body/content, ≤10000 chars, HTML stripped",
       "published_at": "2026-09-23T04:19:30Z",
       "fetched_at": "2026-09-23T04:56:13Z"
     }
@@ -140,7 +140,7 @@ curl -X POST -H "X-API-Key: $RSS_API_KEY" localhost:8080/api/v1/sources/reload
   "ok": true,
   "server_time": "...",
   "service": "rss-hub",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "poll_interval_seconds": 3600,
   "sources_configured": 12,
   "sources_enabled": 12,
@@ -185,7 +185,7 @@ feed_items (
   source       TEXT NOT NULL,
   title        TEXT NOT NULL,
   url          TEXT NOT NULL,
-  summary      TEXT NOT NULL,     -- ≤500 chars
+  summary      TEXT NOT NULL,     -- plain text ≤10000 chars
   published_at TEXT,              -- source format, nullable
   fetched_at   TEXT NOT NULL      -- UTC ISO-8601 — since cursor
 );
@@ -195,7 +195,7 @@ fetch_log (id, source, fetched_at, ok, item_count, error);
 meta      (key, value);           -- last_round_at, last_round_reason, ...
 ```
 
-- **Dedup:** `INSERT OR IGNORE` on `id`  
+- **Dedup:** primary key on `id`; re-crawls refresh `title`/`summary` without moving `fetched_at`
 - **Retention:** 30 days, purged at the end of each crawl round  
 - **Failure isolation:** one dead feed never aborts the round; it only writes `fetch_log`
 

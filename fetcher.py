@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import html
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,7 +21,60 @@ else:
 
 FETCH_TIMEOUT = 15.0
 ENTRIES_PER_FEED = 20
-SUMMARY_LIMIT = 500
+SUMMARY_LIMIT = 10_000
+
+_SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style)[^>]*>.*?</\1>")
+_BR_RE = re.compile(r"(?i)<br\s*/?>")
+_P_CLOSE_RE = re.compile(r"(?i)</p\s*>")
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"[ \t ]+")
+_MULTI_NL_RE = re.compile(r"\n{3,}")
+
+
+def html_to_text(raw: str) -> str:
+    if not raw:
+        return ""
+    text = _SCRIPT_STYLE_RE.sub(" ", raw)
+    text = _BR_RE.sub("\n", text)
+    text = _P_CLOSE_RE.sub("\n\n", text)
+    text = _TAG_RE.sub("", text)
+    text = html.unescape(text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _WS_RE.sub(" ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = _MULTI_NL_RE.sub("\n\n", text)
+    return text.strip()
+
+
+def clip_text(text: str, limit: int = SUMMARY_LIMIT) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    for stop in ("\n", "。", "！", "？", ". ", "！", "；", "; "):
+        pos = cut.rfind(stop)
+        if pos >= int(limit * 0.7):
+            return cut[: pos + len(stop)].strip()
+    return cut.rstrip()
+
+
+def entry_body(entry: Any) -> str:
+    # content[] is often the full article; summary/description may be a short excerpt —
+    # pick the longest so we don't throw away the body when both exist.
+    parts: list[str] = []
+    content = getattr(entry, "content", None)
+    if content:
+        for block in content:
+            val = getattr(block, "value", None) or (block.get("value") if isinstance(block, dict) else None)
+            if val:
+                parts.append(str(val))
+    summary = str(getattr(entry, "summary", "") or "")
+    description = str(getattr(entry, "description", "") or "")
+    for cand in (summary, description):
+        if cand and cand not in parts:
+            parts.append(cand)
+    if not parts:
+        return ""
+    return max(parts, key=len)
 
 
 def load_sources(feeds_path: Path) -> list[dict[str, Any]]:
@@ -75,7 +130,7 @@ async def fetch_one(
             if not url:
                 continue
             title = str(getattr(e, "title", "") or "").strip()[:300]
-            summary = str(getattr(e, "summary", "") or "")[:SUMMARY_LIMIT]
+            summary = clip_text(html_to_text(entry_body(e)))
             items.append(
                 {
                     "id": item_id(url),

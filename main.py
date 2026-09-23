@@ -19,7 +19,7 @@ FEEDS_PATH = BASE_DIR / "feeds.toml"
 DB_PATH = BASE_DIR / "data" / "feeds.db"
 POLL_INTERVAL_SECONDS = int(os.environ.get("RSS_POLL_INTERVAL", "3600"))
 API_KEY = os.environ.get("RSS_API_KEY", "")
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 _sources_cache: list[dict[str, Any]] = []
 _fetch_lock = asyncio.Lock()
@@ -66,6 +66,7 @@ async def _poll_loop() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     store.init(DB_PATH)
+    store.migrate_html_summaries()
     _reload_sources()
     boot = asyncio.create_task(_run_round(reason="boot"))
     poll = asyncio.create_task(_poll_loop())

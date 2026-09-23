@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import html as html_mod
+import re
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -71,8 +73,43 @@ def _require() -> sqlite3.Connection:
     return _conn
 
 
+def _html_to_text(raw: str) -> str:
+    if not raw or "<" not in raw:
+        return (raw or "").strip()
+    text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", raw)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</p\s*>", "\n\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html_mod.unescape(text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t ]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def migrate_html_summaries() -> int:
+    # Legacy rows stored raw HTML truncated at 500 chars; rewrite to plain text once.
+    with _lock:
+        conn = _require()
+        rows = conn.execute(
+            "SELECT id, summary FROM feed_items WHERE summary LIKE '%<%'"
+        ).fetchall()
+        updated = 0
+        for row in rows:
+            cleaned = _html_to_text(row["summary"])
+            if cleaned != row["summary"]:
+                conn.execute(
+                    "UPDATE feed_items SET summary = ? WHERE id = ?",
+                    (cleaned, row["id"]),
+                )
+                updated += 1
+        if updated:
+            conn.commit()
+        return updated
+
+
 def upsert_items(items: list[dict[str, Any]]) -> int:
-    """Insert new items; ignore duplicates by url-derived id. Returns new count."""
     if not items:
         return 0
     inserted = 0
@@ -80,9 +117,13 @@ def upsert_items(items: list[dict[str, Any]]) -> int:
         conn = _require()
         for it in items:
             cur = conn.execute(
-                """INSERT OR IGNORE INTO feed_items
+                """INSERT INTO feed_items
                    (id, source, title, url, summary, published_at, fetched_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     title = excluded.title,
+                     summary = excluded.summary
+                   WHERE feed_items.summary IS NOT excluded.summary""",
                 (
                     it["id"],
                     it["source"],
@@ -93,7 +134,8 @@ def upsert_items(items: list[dict[str, Any]]) -> int:
                     it["fetched_at"],
                 ),
             )
-            inserted += cur.rowcount
+            if cur.rowcount:
+                inserted += 1
         conn.commit()
     return inserted
 
