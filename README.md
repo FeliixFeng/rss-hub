@@ -1,76 +1,112 @@
 # rss-hub
 
-个人 RSS 抓取服务：抓信源 → SQLite 落盘 → 只读 API 供 Ivory 轮询。  
-运行在 `lunar`（VPS），systemd 常驻，端口 **8080**。
-
-## 目录
+**Small, boring, reliable RSS infrastructure.**  
+Crawl feeds on a schedule → store deduped items in SQLite → expose a versioned, key-authenticated API for downstream pollers.
 
 ```
-/home/feng/app/rss-hub/
-├── main.py            # FastAPI 路由 + X-API-Key
-├── fetcher.py         # httpx 抓取 + feedparser 解析
-├── store.py           # SQLite 存储
-├── feeds.toml         # 信源清单
+feeds.toml ──► fetcher (httpx + feedparser) ──► SQLite ──► /api/v1/* ──► your reader / hub
+                     ▲                              │
+                     └── boot + interval + manual ──┘
+```
+
+Designed as the **fetch half** of a personal knowledge hub: this service never talks to your UI. A separate app pulls `since=<cursor>` twice a day (or whenever), runs its own summarization/filtering, and renders the reading experience.
+
+## Why this shape
+
+| Decision | Rationale |
+|----------|-----------|
+| Pull-only API, no webhooks | Consumer-side polling is enough for daily digests; avoids exposing inbound ports on the home server |
+| Cursor = `fetched_at` (`?since=`) | Client owns its high-water mark — the hub stays stateless w.r.t. consumers and can be wiped/rebuilt |
+| `id = sha1(url)[:16]` | Idempotent ingest on both sides; re-crawls are free |
+| TOML feed list, not DB admin UI | Adding a source is a one-line edit + `POST /sources/reload` |
+| SQLite + single process | One VPS, one folder, one systemd unit — trivial to migrate |
+| `X-API-Key` on `/api/v1/*` | Public VPS port should not be an open crawl proxy |
+
+## Quick start
+
+```bash
+# deps: Python ≥3.10, uv (or pip install fastapi uvicorn feedparser httpx tomli)
+export RSS_API_KEY=$(openssl rand -hex 16)
+echo "RSS_API_KEY=$RSS_API_KEY" > .env
+
+uv sync
+uv run uvicorn main:app --host 0.0.0.0 --port 8080
+```
+
+```bash
+curl -s localhost:8080/health
+curl -s -H "X-API-Key: $RSS_API_KEY" localhost:8080/api/v1/items?limit=3
+```
+
+Production: ship `rss-hub.service`, point `EnvironmentFile` at your `.env`, `systemctl enable --now rss-hub`.
+
+## Project layout
+
+```
+├── main.py           # FastAPI routes, auth, envelope, background loop
+├── fetcher.py        # concurrent crawl + parse + persist
+├── store.py          # SQLite schema, upsert, queries, retention
+├── feeds.toml        # source list (name / url / enabled)
+├── rss-hub.service   # systemd unit template
 ├── pyproject.toml
-├── .env               # RSS_API_KEY=... （不入库）
-├── data/feeds.db      # SQLite（不入库）
-└── rss-hub.service
+└── data/feeds.db     # runtime (gitignored)
 ```
 
-## 信源（feeds.toml）
+## Sources
 
-| 名称 | URL | 说明 |
-|------|-----|------|
-| 爱范儿 | https://www.ifanr.com/feed | 科技消费 |
-| 少数派 | https://sspai.com/feed | 效率工具 |
-| 36氪 | https://www.36kr.com/feed | 商业科技（需 www） |
-| InfoQ | https://www.infoq.cn/feed | 开发者 |
-| Hacker News | https://hnrss.org/frontpage | 英文综合 |
-| V2EX | https://www.v2ex.com/index.xml | 社区 |
-| 量子位 | https://www.qbitai.com/feed | AI 中文 |
-| 阮一峰的网络日志 | https://www.ruanyifeng.com/blog/atom.xml | 周刊/博客 |
-| Solidot | https://www.solidot.org/index.rss | 奇客 |
-| GitHub Blog | https://github.blog/feed/ | 开源官方 |
-| GitHub Trending | https://mshibanami.github.io/GitHubTrendingRSS/daily/all.xml | 每日 trending |
-| 安全内参 | https://www.secpulse.com/feed | 安全 |
+Curated in [`feeds.toml`](feeds.toml) — tech news, AI, security, community:
 
-已移除：机器之心官方 `/rss` 已失效（302 → HTML）。
+| Source | Focus |
+|--------|--------|
+| 爱范儿 · 少数派 · 36氪 | Consumer tech / productivity / business |
+| InfoQ · GitHub Blog · GitHub Trending | Engineering & open source |
+| Hacker News · V2EX · Solidot | Community |
+| 量子位 · 阮一峰的网络日志 | AI CN · weekly web |
+| 安全内参 | Security |
 
-改信源：编辑 `feeds.toml` → `POST /api/v1/sources/reload` 或 restart。
+Edit the file, then:
+
+```bash
+curl -X POST -H "X-API-Key: $RSS_API_KEY" localhost:8080/api/v1/sources/reload
+```
+
+> Feeds die. The service treats HTML error pages and empty feeds as first-class failures (logged per source, visible in `/api/v1/status`) instead of silently dropping them.
 
 ## API
 
-- 认证：业务接口需请求头 `X-API-Key: <RSS_API_KEY>`；`/health` 免认证
-- 统一响应壳：
+**Auth:** `X-API-Key: <RSS_API_KEY>` on everything under `/api/v1/`.  
+`/health` is open for uptime checks.
+
+**Envelope** (success and error):
 
 ```json
-{ "ok": true, "server_time": "2026-09-23T05:00:00Z", ... }
-```
-
-失败：
-
-```json
+{ "ok": true,  "server_time": "2026-09-23T05:00:00Z", ... }
 { "ok": false, "server_time": "...", "error": { "code": 401, "message": "..." } }
 ```
 
-### GET /health
+### Endpoints
 
-```json
-{ "ok": true, "server_time": "...", "status": "ok", "service": "rss-hub", "version": "0.3.0" }
-```
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/health` | Liveness |
+| GET | `/api/v1/items` | Incremental item pull |
+| GET | `/api/v1/sources` | Config + last crawl result per source |
+| GET | `/api/v1/status` | Service + DB health |
+| POST | `/api/v1/refresh` | Crawl now |
+| POST | `/api/v1/sources/reload` | Re-read `feeds.toml` |
 
-### GET /api/v1/items
+### `GET /api/v1/items`
 
-| 参数 | 说明 |
-|------|------|
-| `since` | ISO8601，只返回 `fetched_at > since`（Ivory 游标） |
-| `limit` | 1–500，默认 50 |
-| `source` | 精确匹配信源名 |
+| Query | Description |
+|-------|-------------|
+| `since` | ISO-8601 UTC; only rows with `fetched_at > since` |
+| `limit` | 1–500 (default 50) |
+| `source` | Exact source name |
 
 ```json
 {
   "ok": true,
-  "server_time": "...",
+  "server_time": "2026-09-23T05:05:51Z",
   "count": 2,
   "items": [
     {
@@ -78,7 +114,7 @@
       "source": "V2EX",
       "title": "...",
       "url": "https://...",
-      "summary": "正文截断 ≤500 字（可能含 HTML 标签）",
+      "summary": "≤500 chars, may contain HTML",
       "published_at": "2026-09-23T04:19:30Z",
       "fetched_at": "2026-09-23T04:56:13Z"
     }
@@ -86,33 +122,18 @@
 }
 ```
 
-- `id` = `sha1(url)` 前 16 hex，全局幂等  
-- 时间字段：`fetched_at` 为服务端 UTC（`YYYY-MM-DDTHH:MM:SSZ`）；`published_at` 保留源格式（不统一解析）
+- **`id`**: `sha1(url)` truncated to 16 hex chars — stable across crawls  
+- **`fetched_at`**: server UTC, the cursor column  
+- **`published_at`**: left in the feed’s own format (not normalized)
 
-### GET /api/v1/sources
+### Poller contract
 
-配置 + 每源最近一次抓取结果：
+1. Persist `last_fetched_at` (UTC ISO-8601) on the client  
+2. `GET /api/v1/items?since=$last_fetched_at&limit=200`  
+3. Next cursor = response `server_time` (or your clock after a successful call)  
+4. Upsert by `id` — duplicates are expected and harmless  
 
-```json
-{
-  "ok": true,
-  "server_time": "...",
-  "count": 12,
-  "sources": [
-    {
-      "name": "爱范儿",
-      "url": "https://www.ifanr.com/feed",
-      "enabled": true,
-      "last_fetched_at": "...",
-      "last_ok": true,
-      "last_item_count": 10,
-      "last_error": null
-    }
-  ]
-}
-```
-
-### GET /api/v1/status
+### `GET /api/v1/status` (shape)
 
 ```json
 {
@@ -134,9 +155,7 @@
 }
 ```
 
-### POST /api/v1/refresh
-
-立即抓一轮：
+### `POST /api/v1/refresh` (shape)
 
 ```json
 {
@@ -148,7 +167,7 @@
     "sources_total": 12,
     "sources_ok": 12,
     "sources_failed": 0,
-    "items_seen": 120,
+    "items_seen": 180,
     "new_items": 3,
     "purged_items": 0,
     "failures": []
@@ -156,61 +175,49 @@
 }
 ```
 
-### POST /api/v1/sources/reload
+## Storage
 
-重读 `feeds.toml`：
-
-```json
-{ "ok": true, "server_time": "...", "reloaded": 12, "enabled": 12, "names": ["..."] }
-```
-
-## 存储（SQLite: data/feeds.db）
+SQLite file (`data/feeds.db`), three tables:
 
 ```sql
 feed_items (
-  id           TEXT PRIMARY KEY,   -- sha1(url)[:16]
+  id           TEXT PRIMARY KEY,  -- sha1(url)[:16]
   source       TEXT NOT NULL,
   title        TEXT NOT NULL,
   url          TEXT NOT NULL,
-  summary      TEXT NOT NULL,      -- ≤500 chars
-  published_at TEXT,               -- 源格式，可空
-  fetched_at   TEXT NOT NULL       -- UTC ISO8601，since 游标列
-)
-fetch_log (
-  id, source, fetched_at, ok, item_count, error
-)
-meta (key, value)                  -- last_round_at / last_round_reason / migrated_at
+  summary      TEXT NOT NULL,     -- ≤500 chars
+  published_at TEXT,              -- source format, nullable
+  fetched_at   TEXT NOT NULL      -- UTC ISO-8601 — since cursor
+);
+-- indexes: (fetched_at), (source)
+
+fetch_log (id, source, fetched_at, ok, item_count, error);
+meta      (key, value);           -- last_round_at, last_round_reason, ...
 ```
 
-- 索引：`feed_items(fetched_at)`, `feed_items(source)`, `fetch_log(source, fetched_at)`
-- 保留：30 天，每轮抓取末尾 `DELETE WHERE fetched_at < now-30d`
-- 去重：`INSERT OR IGNORE` on `id`
+- **Dedup:** `INSERT OR IGNORE` on `id`  
+- **Retention:** 30 days, purged at the end of each crawl round  
+- **Failure isolation:** one dead feed never aborts the round; it only writes `fetch_log`
 
-## 抓取行为
+## Crawl behavior
 
-- 触发：启动即抓 + 每 60s×`RSS_POLL_INTERVAL`（默认 3600s）+ 手动 refresh
-- UA：Chrome 桌面 UA（量子位等站需要）
-- 单源失败只记 `fetch_log`，不中断本轮
+| Trigger | When |
+|---------|------|
+| Boot | Immediately on process start |
+| Interval | Every `RSS_POLL_INTERVAL` seconds (default `3600`) |
+| Manual | `POST /api/v1/refresh` |
 
-## 运维
+Desktop Chrome `User-Agent` (several CN sites reject default library UAs). Per-source timeout 15s, max 20 entries ingested per feed per round.
 
-```bash
-ssh lunar
-systemctl status rss-hub
-journalctl -u rss-hub -f
+## Configuration
 
-# 改信源后
-curl -X POST -H "X-API-Key: $KEY" http://127.0.0.1:8080/api/v1/sources/reload
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `RSS_API_KEY` | — | Required; all `/api/v1/*` calls |
+| `RSS_POLL_INTERVAL` | `3600` | Background crawl period (seconds) |
 
-# 升级代码
-cd /home/feng/app/rss-hub && uv sync && sudo systemctl restart rss-hub
-```
+Secrets live in `.env` (`EnvironmentFile` for systemd) — **never commit `.env` or `data/`**.
 
-Key：`/home/feng/app/rss-hub/.env` 中 `RSS_API_KEY`（禁止提交到 git）。
+## License
 
-## 客户端（Ivory）约定
-
-1. 本地存 `last_fetched_at`（ISO8601 UTC）
-2. `GET /api/v1/items?since=<cursor>&limit=200`
-3. 用响应里的 `server_time`（或本机 UTC）作为下次 `since`
-4. 按 `id` 入库幂等
+MIT
