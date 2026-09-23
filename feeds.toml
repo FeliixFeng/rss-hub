@@ -1,0 +1,62 @@
+# rss-hub source list.
+# Edit → `POST /api/v1/sources/reload` (X-API-Key) or `sudo systemctl restart rss-hub`.
+
+[[source]]
+name = "爱范儿"
+url = "https://www.ifanr.com/feed"
+enabled = true
+
+[[source]]
+name = "少数派"
+url = "https://sspai.com/feed"
+enabled = true
+
+[[source]]
+name = "36氪"
+url = "https://www.36kr.com/feed"
+enabled = true
+
+[[source]]
+name = "InfoQ"
+url = "https://www.infoq.cn/feed"
+enabled = true
+
+[[source]]
+name = "Hacker News"
+url = "https://hnrss.org/frontpage"
+enabled = true
+
+[[source]]
+name = "V2EX"
+url = "https://www.v2ex.com/index.xml"
+enabled = true
+
+[[source]]
+name = "量子位"
+url = "https://www.qbitai.com/feed"
+enabled = true
+
+[[source]]
+name = "阮一峰的网络日志"
+url = "https://www.ruanyifeng.com/blog/atom.xml"
+enabled = true
+
+[[source]]
+name = "Solidot"
+url = "https://www.solidot.org/index.rss"
+enabled = true
+
+[[source]]
+name = "GitHub Blog"
+url = "https://github.blog/feed/"
+enabled = true
+
+[[source]]
+name = "GitHub Trending"
+url = "https://mshibanami.github.io/GitHubTrendingRSS/daily/all.xml"
+enabled = true
+
+[[source]]
+name = "安全内参"
+url = "https://www.secpulse.com/feed"
+enabled = true

@@ -1,0 +1,17 @@
+[Unit]
+Description=rss-hub personal RSS fetcher API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/feng/app/rss-hub
+EnvironmentFile=/home/feng/app/rss-hub/.env
+Environment=PATH=/home/feng/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/feng/.local/bin/uv run --project /home/feng/app/rss-hub uvicorn main:app --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=5
+User=feng
+
+[Install]
+WantedBy=multi-user.target

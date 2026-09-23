@@ -1,0 +1,7 @@
+data/
+.env
+.venv/
+__pycache__/
+*.pyc
+.api_key_local_ref
+.env
